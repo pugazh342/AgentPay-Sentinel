@@ -35,7 +35,26 @@ _ALLOWED_EXTRA_FIELDS = (
     "webhook_event_id",
     "webhook_event_type",
     "outcome",
+    # Diagnostic fields for PayPal binding verification
+    "paypal_response_status",
+    "paypal_purchase_units_count",
+    "paypal_raw_purchase_units",
+    "paypal_custom_id",
+    "paypal_reference_id",
+    "paypal_parsed_custom_id",
+    "binding_validated",
 )
+
+# Additional paypal-specific logging configuration
+_PAYPAL_LOG_FIELDS = frozenset({
+    "paypal_response_status",
+    "paypal_order_id",
+    "paypal_purchase_units_count",
+    "paypal_custom_id",
+    "paypal_reference_id",
+    "paypal_parsed_custom_id",
+    "binding_validated",
+})
 
 
 class JsonFormatter(logging.Formatter):

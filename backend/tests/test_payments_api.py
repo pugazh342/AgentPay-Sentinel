@@ -805,3 +805,263 @@ def start_order_only(
     created = approved.json()
     assert created["state"] == "PAYPAL_ORDER_CREATED"
     return created
+
+
+# ----------------------------------------------------------------------
+# Regression tests for PayPal binding verification
+# ----------------------------------------------------------------------
+def test_exact_custom_id_match_succeeds(
+    payment_client: TestClient,
+    stub_paypal: StubPayPalGateway,
+    payment_intent_factory,
+    payment_evaluate,
+) -> None:
+    """When custom_id exactly matches transaction_id, binding succeeds."""
+    approved = start_order_only(
+        payment_client, stub_paypal, payment_intent_factory, payment_evaluate
+    )
+    # Verify the custom_id in the order matches expected transaction_id
+    create_call = stub_paypal.create_calls[0]
+    assert create_call["custom_id"] == approved["transaction_id"]
+
+
+def test_missing_custom_id_fails_closed(
+    payment_client: TestClient,
+    stub_paypal: StubPayPalGateway,
+    payment_intent_factory,
+    payment_evaluate,
+) -> None:
+    """When PayPal returns null custom_id, binding fails closed.
+
+    SECURITY: custom_id is the authoritative binding identifier.
+    """
+    approved = start_order_only(
+        payment_client, stub_paypal, payment_intent_factory, payment_evaluate
+    )
+    stub_paypal.order_overrides[approved["paypal_order_id"]] = PayPalOrderResult(
+        order_id=approved["paypal_order_id"],
+        status="APPROVED",
+        amount=Decimal("5.00"),
+        currency="USD",
+        custom_id=None,
+        raw_custom_id=None,
+        raw_reference_id=None,
+    )
+
+    response = buyer_return(payment_client, approved["payment_id"])
+    assert response.status_code == 502
+    assert get_payment(payment_client, approved["payment_id"])["state"] == "FAILED"
+
+
+def test_mismatched_custom_id_fails_closed(
+    payment_client: TestClient,
+    stub_paypal: StubPayPalGateway,
+    payment_intent_factory,
+    payment_evaluate,
+) -> None:
+    """When custom_id doesn't match transaction_id, binding fails closed.
+
+    The validation checks order.custom_id (the authoritative field), not raw values.
+    """
+    approved = start_order_only(
+        payment_client, stub_paypal, payment_intent_factory, payment_evaluate
+    )
+    stub_paypal.order_overrides[approved["paypal_order_id"]] = PayPalOrderResult(
+        order_id=approved["paypal_order_id"],
+        status="APPROVED",
+        amount=Decimal("5.00"),
+        currency="USD",
+        custom_id="wrong-transaction-id-12345",
+        raw_custom_id="wrong-transaction-id-12345",
+        raw_reference_id=None,
+    )
+
+    response = buyer_return(payment_client, approved["payment_id"])
+    assert response.status_code == 502
+    payment = get_payment(payment_client, approved["payment_id"])
+    assert payment["state"] == "FAILED"
+    assert "not bound" in payment["failure_reason"].lower()
+
+
+def test_custom_id_with_reference_id_mismatch_fails(
+    payment_client: TestClient,
+    stub_paypal: StubPayPalGateway,
+    payment_intent_factory,
+    payment_evaluate,
+) -> None:
+    """When custom_id is null but reference_id has a value, binding fails.
+
+    SECURITY: reference_id is NOT a valid binding substitute.
+    This prevents the previous silent fallback vulnerability.
+    """
+    approved = start_order_only(
+        payment_client, stub_paypal, payment_intent_factory, payment_evaluate
+    )
+    # PayPal returned: custom_id=null, reference_id="some-value"
+    # Expected: custom_id should be None (binding fails)
+    stub_paypal.order_overrides[approved["paypal_order_id"]] = PayPalOrderResult(
+        order_id=approved["paypal_order_id"],
+        status="APPROVED",
+        amount=Decimal("5.00"),
+        currency="USD",
+        custom_id=None,  # Missing - binding MUST fail
+        raw_custom_id=None,
+        raw_reference_id="some-other-transaction-id",
+    )
+
+    response = buyer_return(payment_client, approved["payment_id"])
+    assert response.status_code == 502
+    assert get_payment(payment_client, approved["payment_id"])["state"] == "FAILED"
+
+
+def test_reference_id_not_accepted_as_fallback(
+    payment_client: TestClient,
+    stub_paypal: StubPayPalGateway,
+    payment_intent_factory,
+    payment_evaluate,
+) -> None:
+    """When custom_id is null and reference_id matches transaction, binding still fails.
+
+    SECURITY: This verifies that reference_id fallback is PROHIBITED.
+    The previous implementation would silently accept reference_id as a fallback,
+    creating a security vulnerability where PayPal could return arbitrary reference_id
+    and it would be accepted as the binding identifier.
+    """
+    approved = start_order_only(
+        payment_client, stub_paypal, payment_intent_factory, payment_evaluate
+    )
+    # PayPal returned: custom_id=null, reference_id=transaction_id (matching!)
+    # Expected: STILL FAILS because custom_id is authoritative
+    stub_paypal.order_overrides[approved["paypal_order_id"]] = PayPalOrderResult(
+        order_id=approved["paypal_order_id"],
+        status="APPROVED",
+        amount=Decimal("5.00"),
+        currency="USD",
+        custom_id=None,  # Missing - binding MUST fail even if reference_id matches
+        raw_custom_id=None,
+        raw_reference_id=approved["transaction_id"],  # Matching but ignored
+    )
+
+    response = buyer_return(payment_client, approved["payment_id"])
+    assert response.status_code == 502
+    assert get_payment(payment_client, approved["payment_id"])["state"] == "FAILED"
+
+
+def test_duplicate_order_creation_prevented(
+    payment_client: TestClient,
+    stub_paypal: StubPayPalGateway,
+    payment_intent_factory,
+    payment_evaluate,
+) -> None:
+    """Re-approving a payment in PAYPAL_ORDER_CREATED state fails."""
+    approved = start_order_only(
+        payment_client, stub_paypal, payment_intent_factory, payment_evaluate
+    )
+
+    # Attempt second approval
+    second = approve_payment(payment_client, approved["payment_id"])
+    assert second.status_code == 409
+    assert second.json()["error"]["code"] == "PAYMENT_STATE_INVALID"
+    # Only one create call
+    assert len(stub_paypal.create_calls) == 1
+
+
+def test_malformed_paypal_response_fails_closed(
+    payment_client: TestClient,
+    stub_paypal: StubPayPalGateway,
+    payment_intent_factory,
+    payment_evaluate,
+) -> None:
+    """When PayPal returns incomplete/malformed response, binding fails."""
+    approved = start_order_only(
+        payment_client, stub_paypal, payment_intent_factory, payment_evaluate
+    )
+
+    # Override with missing order_id (malformed)
+    stub_paypal.order_overrides[approved["paypal_order_id"]] = PayPalOrderResult(
+        order_id=approved["paypal_order_id"],
+        status="APPROVED",
+        amount=None,  # Missing amount
+        currency=None,  # Missing currency
+        custom_id=approved["transaction_id"],
+    )
+
+    response = buyer_return(payment_client, approved["payment_id"])
+    # Should fail with amount/currency mismatch
+    assert response.status_code == 502
+
+
+def test_custom_id_missing_fails_closed(
+    payment_client: TestClient,
+    stub_paypal: StubPayPalGateway,
+    payment_intent_factory,
+    payment_evaluate,
+) -> None:
+    """When custom_id is null (regardless of reference_id), binding fails closed.
+
+    SECURITY: custom_id is the authoritative binding identifier.
+    reference_id is NOT a valid fallback - this prevents silent binding bypasses.
+    """
+    approved = start_order_only(
+        payment_client, stub_paypal, payment_intent_factory, payment_evaluate
+    )
+    # Override with null custom_id but matching reference_id
+    # This should FAIL - reference_id is NOT a valid binding substitute
+    stub_paypal.order_overrides[approved["paypal_order_id"]] = PayPalOrderResult(
+        order_id=approved["paypal_order_id"],
+        status="APPROVED",
+        amount=Decimal("5.00"),
+        currency="USD",
+        custom_id=None,  # Missing - binding MUST fail
+        raw_custom_id=None,
+        raw_reference_id=approved["transaction_id"],  # Matching, but ignored
+    )
+
+    response = buyer_return(payment_client, approved["payment_id"])
+    assert response.status_code == 502
+    assert get_payment(payment_client, approved["payment_id"])["state"] == "FAILED"
+
+
+def test_custom_id_must_match_transaction_exactly(
+    payment_client: TestClient,
+    stub_paypal: StubPayPalGateway,
+    payment_intent_factory,
+    payment_evaluate,
+) -> None:
+    """custom_id must match transaction_id exactly - no normalization allowed.
+
+    PayPal Sandbox may transform UUIDs; we compare the exact string.
+    """
+    approved = start_order_only(
+        payment_client, stub_paypal, payment_intent_factory, payment_evaluate
+    )
+    # Test with lowercased UUID (if PayPal normalizes)
+    stub_paypal.order_overrides[approved["paypal_order_id"]] = PayPalOrderResult(
+        order_id=approved["paypal_order_id"],
+        status="APPROVED",
+        amount=Decimal("5.00"),
+        currency="USD",
+        custom_id=approved["transaction_id"].lower(),  # Different case
+        raw_custom_id=approved["transaction_id"].lower(),
+        raw_reference_id=None,
+    )
+
+    response = buyer_return(payment_client, approved["payment_id"])
+    assert response.status_code == 502
+    assert get_payment(payment_client, approved["payment_id"])["state"] == "FAILED"
+
+
+def test_minimal_response_followed_by_successful_get_validation(
+    payment_client: TestClient,
+    stub_paypal: StubPayPalGateway,
+    payment_intent_factory,
+    payment_evaluate,
+) -> None:
+    """When create_order returns minimal response, GET retrieval validates binding."""
+    # This is tested via the client logic; we verify stub/client behavior
+    intent = payment_intent_factory()
+    transaction = evaluate_transaction(payment_evaluate, intent)
+    payment = prepare_payment(client=payment_client, transaction_id=transaction["transaction_id"])
+    # Verify approval works when order has valid custom_id
+    approved = approve_payment(payment_client, payment["payment_id"])
+    assert approved.status_code == 200

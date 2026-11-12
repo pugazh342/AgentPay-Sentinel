@@ -19,7 +19,7 @@ from app.security_testing.models import (
 )
 
 REPORT_SCHEMA_VERSION = 1
-REPORT_MILESTONE = "04"
+REPORT_MILESTONE = "07"
 
 
 def build_report(

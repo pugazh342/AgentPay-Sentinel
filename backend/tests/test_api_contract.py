@@ -17,10 +17,13 @@ def test_health_ok(client: TestClient) -> None:
     body = response.json()
     assert body["status"] == "ok"
     assert body["service"] == "agentpay-sentinel"
-    assert body["checks"] == {
-        "database": "ok",
-        "hmac_configuration": "configured",
-    }
+    checks = body["checks"]
+    assert checks["database"] == "ok"
+    assert checks["hmac_configuration"] == "configured"
+    # New AI provider fields (may vary based on test configuration)
+    assert "ai_provider" in checks
+    assert "ai_model" in checks
+    assert "ai_status" in checks
     assert "X-Request-ID" in response.headers
 
 

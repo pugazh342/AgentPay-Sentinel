@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 
 from app.api.deps import (
     get_intent_service,
@@ -13,7 +13,7 @@ from app.api.deps import (
 from app.application.intent_service import CreateIntentCommand, IntentService
 from app.domain.errors import NotFoundFailure
 from app.schemas.common import ErrorResponse
-from app.schemas.intent import IntentCreateRequest, IntentResponse
+from app.schemas.intent import IntentCreateRequest, IntentListResponse, IntentResponse
 
 router = APIRouter(
     prefix="/api/v1/intents",
@@ -25,6 +25,30 @@ _ERROR_RESPONSES = {
     422: {"model": ErrorResponse, "description": "Validation error"},
     503: {"model": ErrorResponse, "description": "Security configuration invalid"},
 }
+
+
+@router.get(
+    "",
+    response_model=IntentListResponse,
+    summary="List persisted purchase intents",
+    description=(
+        "Read-only paginated listing of persisted purchase intents. "
+        "Intents are immutable; this endpoint performs no writes."
+    ),
+    responses=_ERROR_RESPONSES,
+)
+def list_intents(
+    limit: int = Query(default=100, ge=1, le=1000, description="Max results."),
+    offset: int = Query(default=0, ge=0, description="Pagination offset."),
+    service: IntentService = Depends(get_intent_service),
+) -> IntentListResponse:
+    items, total = service.list_intents(limit=limit, offset=offset)
+    return IntentListResponse(
+        total_count=total,
+        limit=limit,
+        offset=offset,
+        results=[IntentResponse.model_validate(i) for i in items],
+    )
 
 
 @router.post(

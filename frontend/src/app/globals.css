@@ -1,0 +1,87 @@
+@import "tailwindcss";
+
+:root {
+  /* PayPal-inspired premium fintech palette (AgentPay Sentinel independent branding) */
+  --background: 210 40% 98%; /* #F8FAFD */
+  --foreground: 0 0% 7%; /* #111111 */
+  --card: 0 0% 100%; /* #FFFFFF */
+  --card-foreground: 0 0% 7%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 0 0% 7%;
+  --primary: 224 100% 28%; /* #002991 Deep blue */
+  --primary-foreground: 0 0% 100%;
+  --secondary: 210 40% 96%;
+  --secondary-foreground: 0 0% 7%;
+  --muted: 210 40% 96%;
+  --muted-foreground: 215 16% 47%;
+  --accent: 205 100% 50%; /* #008CFF Bright blue */
+  --accent-foreground: 0 0% 100%;
+  --accent-light: 199 100% 69%; /* #60CDFF Light blue */
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 214 32% 91%;
+  --input: 214 32% 91%;
+  --ring: 205 100% 50%;
+  --radius: 0.5rem;
+
+  /* Semantic status colors (distinct, not all blue) */
+  --status-completed: 142 71% 45%;
+  --status-completed-foreground: 0 0% 100%;
+  --status-verified: 142 71% 45%;
+  --status-verified-foreground: 0 0% 100%;
+  --status-blocked: 0 84% 60%;
+  --status-blocked-foreground: 0 0% 100%;
+  --status-critical: 0 72% 51%;
+  --status-critical-foreground: 0 0% 100%;
+  --status-review: 38 92% 50%;
+  --status-review-foreground: 26 83% 14%;
+  --status-warning: 38 92% 50%;
+  --status-warning-foreground: 26 83% 14%;
+  --status-pending: 215 16% 47%;
+  --status-pending-foreground: 0 0% 100%;
+  --status-failed: 0 84% 60%;
+  --status-failed-foreground: 0 0% 100%;
+  --status-low: 142 71% 45%;
+  --status-low-foreground: 0 0% 100%;
+  --status-medium: 38 92% 50%;
+  --status-medium-foreground: 26 83% 14%;
+  --status-high: 0 84% 60%;
+  --status-high-foreground: 0 0% 100%;
+}
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+}
+
+* {
+  border-color: hsl(var(--border));
+}
+
+body {
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-feature-settings: "rlig" 1, "calt" 1;
+}
+
+:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}

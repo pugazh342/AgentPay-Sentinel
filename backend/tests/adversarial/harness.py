@@ -26,6 +26,10 @@ from app.main import create_app
 from tests.conftest import (
     BASE_TIME,
     TEST_HMAC_SECRET,
+    TEST_OPERATOR_PASSWORD,
+    TEST_OPERATOR_PASSWORD_HASH,
+    TEST_OPERATOR_SESSION_SECRET,
+    TEST_OPERATOR_USERNAME,
     MutableClock,
     StubPayPalGateway,
     StubThreatProvider,
@@ -136,6 +140,11 @@ class ScenarioHarness(AbstractContextManager["ScenarioHarness"]):
             database_url=f"sqlite:///{db_path}",
             environment="test",
             log_level="WARNING",
+            operator_username=TEST_OPERATOR_USERNAME,
+            operator_password_hash=TEST_OPERATOR_PASSWORD_HASH,
+            operator_session_secret=TEST_OPERATOR_SESSION_SECRET,
+            operator_cookie_secure=False,
+            auth_enabled=True,
         )
         self.clock = MutableClock(BASE_TIME)
         self.threat_provider = StubThreatProvider()
@@ -148,6 +157,8 @@ class ScenarioHarness(AbstractContextManager["ScenarioHarness"]):
         )
         self._client_context = TestClient(self.app)
         self.client = self._client_context.__enter__()
+        self._login()
+        self._wrap_csrf()
         return self
 
     def __exit__(self, exc_type, exc, traceback) -> None:
@@ -474,6 +485,31 @@ class ScenarioHarness(AbstractContextManager["ScenarioHarness"]):
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+    def _login(self) -> None:
+        client = self._client()
+        response = client.post(
+            "/api/v1/auth/login",
+            json={"username": TEST_OPERATOR_USERNAME, "password": TEST_OPERATOR_PASSWORD},
+        )
+        if response.status_code != 200:
+            raise RuntimeError(f"test operator login failed: {response.status_code} {response.text}")
+
+    def _wrap_csrf(self) -> None:
+        client = self._client()
+        original_request = client.request
+
+        def request_with_csrf(method, url, **kwargs):
+            m = str(method).upper()
+            if m not in {"GET", "HEAD", "OPTIONS"}:
+                csrf = client.cookies.get("aps_csrf")
+                if csrf:
+                    headers = dict(kwargs.get("headers") or {})
+                    headers.setdefault("X-CSRF-Token", csrf)
+                    kwargs["headers"] = headers
+            return original_request(method, url, **kwargs)
+
+        client.request = request_with_csrf  # type: ignore[assignment]
+
     def _client(self) -> TestClient:
         assert self.client is not None, "harness is not entered"
         return self.client

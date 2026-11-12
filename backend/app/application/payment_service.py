@@ -7,6 +7,7 @@ authorization authority; the AI layer is not imported here at all.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -14,6 +15,8 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy.exc import IntegrityError
+
+logger = logging.getLogger("agentpay")
 
 from app.domain.clock import Clock
 from app.domain.entities import PaymentDecision, PurchaseIntent, TransactionRecord
@@ -91,13 +94,63 @@ class PaymentService:
         self._unit_of_work = unit_of_work
 
     # ------------------------------------------------------------------
-    # Read / prepare
+    # Read / list
     # ------------------------------------------------------------------
     def get(self, payment_id: UUID) -> Payment | None:
         return self._payments.get(payment_id)
 
+    def list_payments(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        state: PaymentState | None = None,
+        intent_id: UUID | None = None,
+        transaction_id: UUID | None = None,
+    ) -> list[Payment]:
+        """List payments with optional filtering and pagination.
+
+        Returns payments ordered by creation time descending.
+        """
+        return self._payments.list(
+            limit=limit,
+            offset=offset,
+            state=state,
+            intent_id=intent_id,
+            transaction_id=transaction_id,
+        )
+
+    def count_payments(
+        self,
+        *,
+        state: PaymentState | None = None,
+        intent_id: UUID | None = None,
+        transaction_id: UUID | None = None,
+    ) -> int:
+        """Return the total count of payments matching the given filters.
+
+        Uses the same predicates as ``list_payments`` so that ``total_count``
+        reflects the filtered dataset size rather than the current page size.
+        """
+        return self._payments.count(
+            state=state,
+            intent_id=intent_id,
+            transaction_id=transaction_id,
+        )
+
+    # ------------------------------------------------------------------
+    # Read / prepare
+    # ------------------------------------------------------------------
     async def prepare(self, transaction_id: UUID) -> Payment:
-        """Create (or return) the single payment bound to a transaction."""
+        """Create (or return) the single payment bound to a transaction.
+
+        SECURITY: Payment preparation creates an audit record for ALL transaction
+        states. BLOCK and REVIEW_REQUIRED payments are created in their terminal
+        states and cannot transition. Only ALLOW_FOR_APPROVAL payments proceed
+        to PENDING_USER_APPROVAL and can be approved.
+
+        The frontend must check the returned payment.state to determine next steps.
+        """
 
         existing = self._payments.get_by_transaction(transaction_id)
         if existing is not None:
@@ -843,8 +896,31 @@ class PaymentService:
         self, payment: Payment, order: PayPalOrderResult
     ) -> str | None:
         if payment.paypal_order_id and order.order_id != payment.paypal_order_id:
+            logger.warning(
+                "paypal_binding_order_id_mismatch",
+                extra={
+                    "payment_id": str(payment.payment_id),
+                    "transaction_id": str(payment.transaction_id),
+                    "expected_order_id": payment.paypal_order_id,
+                    "received_order_id": order.order_id,
+                },
+            )
             return "PayPal returned a different order ID than the stored payment."
-        if order.custom_id != str(payment.transaction_id):
+        expected_transaction_id = str(payment.transaction_id)
+        if order.custom_id != expected_transaction_id:
+            logger.warning(
+                "paypal_binding_custom_id_mismatch",
+                extra={
+                    "payment_id": str(payment.payment_id),
+                    "transaction_id": expected_transaction_id,
+                    "expected_custom_id": expected_transaction_id,
+                    "received_custom_id": order.custom_id,
+                    "raw_custom_id": order.raw_custom_id,
+                    "raw_reference_id": order.raw_reference_id,
+                    "paypal_order_id": order.order_id,
+                    "binding_validated": order.custom_id == expected_transaction_id,
+                },
+            )
             return "PayPal order is not bound to this internal transaction."
         if order.amount is None or order.currency is None:
             return "PayPal order did not include a verifiable amount."

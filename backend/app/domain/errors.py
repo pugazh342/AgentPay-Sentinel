@@ -85,6 +85,34 @@ class WebhookVerificationFailure(AppError):
     code = "WEBHOOK_SIGNATURE_INVALID"
 
 
+class AuthenticationFailure(AppError):
+    """Missing or invalid operator authentication."""
+
+    status_code = 401
+    code = "UNAUTHORIZED"
+
+
+class AuthorizationFailure(AppError):
+    """Authenticated but not permitted to perform the action."""
+
+    status_code = 403
+    code = "FORBIDDEN"
+
+
+class CsrfFailure(AppError):
+    """CSRF validation failed for a state-changing request."""
+
+    status_code = 403
+    code = "CSRF_INVALID"
+
+
+class RateLimitFailure(AppError):
+    """Too many authentication attempts."""
+
+    status_code = 429
+    code = "RATE_LIMITED"
+
+
 class ConfigurationFailure(Exception):
     """Raised when the fingerprint service cannot be constructed safely."""
 

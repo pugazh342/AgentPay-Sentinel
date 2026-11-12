@@ -144,3 +144,13 @@ class IntentResponse(BaseModel):
     require_approval: bool
     created_at: datetime
     expires_at: datetime
+
+class IntentListResponse(BaseModel):
+    """Paginated list of purchase intents (fingerprint excluded)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    total_count: int = Field(description="Total number of persisted intents.")
+    limit: int = Field(description="Maximum results per page.")
+    offset: int = Field(description="Pagination offset.")
+    results: list[IntentResponse] = Field(description="Persisted intents, newest first.")

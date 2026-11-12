@@ -12,8 +12,11 @@ from app.domain.errors import NotFoundFailure
 from app.schemas.common import ErrorResponse
 from app.schemas.payment import (
     PaymentApprovalRequest,
+    PaymentListResponse,
+    PaymentsFilter,
     PaymentPrepareRequest,
     PaymentResponse,
+    PaymentResponseSafe,
 )
 
 router = APIRouter(
@@ -50,6 +53,41 @@ async def prepare_payment(
 ) -> PaymentResponse:
     payment = await service.prepare(payload.transaction_id)
     return PaymentResponse.model_validate(payment)
+
+
+@router.get(
+    "",
+    response_model=PaymentListResponse,
+    summary="List payments with optional filtering",
+    description=(
+        "Returns a paginated list of persisted payments. "
+        "Supports filtering by state, intent_id, and transaction_id. "
+        "Results are ordered by creation time descending."
+    ),
+)
+def list_payments(
+    filter: PaymentsFilter = Depends(),
+    service: PaymentService = Depends(get_payment_service),
+) -> PaymentListResponse:
+    payments = service.list_payments(
+        limit=filter.limit,
+        offset=filter.offset,
+        state=filter.state,
+        intent_id=filter.intent_id,
+        transaction_id=filter.transaction_id,
+    )
+    # Apply the same filters to get the accurate filtered count
+    total = service.count_payments(
+        state=filter.state,
+        intent_id=filter.intent_id,
+        transaction_id=filter.transaction_id,
+    )
+    return PaymentListResponse(
+        total_count=total,
+        limit=filter.limit,
+        offset=filter.offset,
+        results=[PaymentResponseSafe.model_validate(p) for p in payments],
+    )
 
 
 @router.get(

@@ -21,6 +21,10 @@ from app.domain.threat import ThreatAnalysisInput, ThreatAssessmentPayload, Thre
 from app.main import create_app
 
 TEST_HMAC_SECRET = "test-only-secret-0123456789abcdef0123456789abcdef"
+TEST_OPERATOR_USERNAME = "operator"
+TEST_OPERATOR_PASSWORD = "testpass123"
+TEST_OPERATOR_PASSWORD_HASH = "pbkdf2_sha256$260000$YOhOsEc7thph7pSfuHzP1g$uoGNrKarT6ZDd0yN3Y22c0Ku5TBG4BK9hJozQH2f-wk"
+TEST_OPERATOR_SESSION_SECRET = "test-operator-session-secret-0123456789abcdef"
 BASE_TIME = datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
 
 
@@ -54,6 +58,11 @@ def settings(tmp_path) -> Settings:
         database_url=f"sqlite:///{database_path}",
         environment="test",
         log_level="WARNING",
+        operator_username=TEST_OPERATOR_USERNAME,
+        operator_password_hash=TEST_OPERATOR_PASSWORD_HASH,
+        operator_session_secret=TEST_OPERATOR_SESSION_SECRET,
+        operator_cookie_secure=False,
+        auth_enabled=True,
     )
 
 
@@ -62,9 +71,36 @@ def app(settings: Settings, clock: MutableClock) -> FastAPI:
     return create_app(settings=settings, clock=clock)
 
 
+def _login_test_operator(test_client: TestClient) -> None:
+    response = test_client.post(
+        "/api/v1/auth/login",
+        json={"username": TEST_OPERATOR_USERNAME, "password": TEST_OPERATOR_PASSWORD},
+    )
+    assert response.status_code == 200, response.text
+
+
+def _attach_csrf_header(test_client: TestClient, method: str, kwargs: dict) -> None:
+    if str(method).upper() in {"GET", "HEAD", "OPTIONS"}:
+        return
+    csrf = test_client.cookies.get("aps_csrf")
+    if not csrf:
+        return
+    headers = dict(kwargs.get("headers") or {})
+    headers.setdefault("X-CSRF-Token", csrf)
+    kwargs["headers"] = headers
+
+
 @pytest.fixture
 def client(app: FastAPI) -> Iterator[TestClient]:
     with TestClient(app) as test_client:
+        _login_test_operator(test_client)
+        original_request = test_client.request
+
+        def request_with_csrf(method, url, **kwargs):
+            _attach_csrf_header(test_client, method, kwargs)
+            return original_request(method, url, **kwargs)
+
+        test_client.request = request_with_csrf  # type: ignore[assignment]
         yield test_client
 
 
@@ -192,6 +228,14 @@ def analysis_app(
 @pytest.fixture
 def analysis_client(analysis_app: FastAPI) -> Iterator[TestClient]:
     with TestClient(analysis_app) as test_client:
+        _login_test_operator(test_client)
+        original_request = test_client.request
+
+        def request_with_csrf(method, url, **kwargs):
+            _attach_csrf_header(test_client, method, kwargs)
+            return original_request(method, url, **kwargs)
+
+        test_client.request = request_with_csrf  # type: ignore[assignment]
         yield test_client
 
 
@@ -346,6 +390,8 @@ class StubPayPalGateway:
             custom_id=order["custom_id"],
             capture_id=order["capture_id"],
             capture_status=order["capture_status"],
+            raw_custom_id=order.get("custom_id"),
+            raw_reference_id=order.get("reference_id"),
         )
 
 
@@ -370,6 +416,14 @@ def payment_app(
 @pytest.fixture
 def payment_client(payment_app: FastAPI) -> Iterator[TestClient]:
     with TestClient(payment_app) as test_client:
+        _login_test_operator(test_client)
+        original_request = test_client.request
+
+        def request_with_csrf(method, url, **kwargs):
+            _attach_csrf_header(test_client, method, kwargs)
+            return original_request(method, url, **kwargs)
+
+        test_client.request = request_with_csrf  # type: ignore[assignment]
         yield test_client
 
 

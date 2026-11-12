@@ -31,6 +31,10 @@ class IntentRepository(Protocol):
 
     def get(self, intent_id: UUID) -> PurchaseIntent | None: ...
 
+    def list(self, *, limit: int = 100, offset: int = 0) -> list[PurchaseIntent]: ...
+
+    def count(self) -> int: ...
+
 
 class TransactionRepository(Protocol):
     def add(self, record: TransactionRecord) -> None: ...
@@ -48,6 +52,13 @@ class SecurityEventRepository(Protocol):
         event_type: EventType | None = None,
         decision: Decision | None = None,
     ) -> list[SecurityEvent]: ...
+
+    def count(
+        self,
+        *,
+        event_type: EventType | None = None,
+        decision: Decision | None = None,
+    ) -> int: ...
 
 
 class UnitOfWork(Protocol):

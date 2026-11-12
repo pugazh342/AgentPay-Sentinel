@@ -147,7 +147,13 @@ class Payment:
 
 @dataclass(frozen=True, slots=True)
 class PayPalOrderResult:
-    """Safe projection of a PayPal order response."""
+    """Safe projection of a PayPal order response.
+
+    SECURITY: custom_id is the authoritative binding identifier.
+    It must match the expected transaction UUID exactly.
+    The fallback from custom_id to reference_id has been removed to prevent
+    silent binding bypasses. If PayPal doesn't return custom_id, binding fails.
+    """
 
     order_id: str
     status: str
@@ -157,6 +163,9 @@ class PayPalOrderResult:
     custom_id: str | None = None
     capture_id: str | None = None
     capture_status: str | None = None
+    # Diagnostic fields for binding verification (never used for binding)
+    raw_custom_id: str | None = None
+    raw_reference_id: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.order_id, str) or not self.order_id.strip():

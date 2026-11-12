@@ -1295,7 +1295,8 @@ def _concurrency_capture_claim(
 
 
 @_executor("concurrency_payment_row")
-def _concurrency_payment_row(harness: ScenarioHarness) -> ExecutionResult:    intent = harness.create_intent()
+def _concurrency_payment_row(harness: ScenarioHarness) -> ExecutionResult:
+    intent = harness.create_intent()
     body = harness.evaluate_json(intent)
     transaction_id = body["transaction_id"]
     database = harness.database

@@ -53,6 +53,9 @@ class ErrorResponse(BaseModel):
 class HealthChecks(BaseModel):
     database: str
     hmac_configuration: str
+    ai_provider: str | None = None
+    ai_model: str | None = None
+    ai_status: str | None = None
 
 
 class HealthResponse(BaseModel):

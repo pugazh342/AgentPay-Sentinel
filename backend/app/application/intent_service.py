@@ -84,3 +84,11 @@ class IntentService:
 
     def get(self, intent_id: UUID) -> PurchaseIntent | None:
         return self._intents.get(intent_id)
+
+    def list_intents(
+        self, *, limit: int = 100, offset: int = 0
+    ) -> tuple[list[PurchaseIntent], int]:
+        """Return a page of intents and the total count (read-only)."""
+        items = self._intents.list(limit=limit, offset=offset)
+        total = self._intents.count()
+        return items, total

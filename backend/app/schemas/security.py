@@ -26,4 +26,5 @@ class SecurityEventResponse(BaseModel):
 class SecurityEventListResponse(BaseModel):
     items: list[SecurityEventResponse]
     count: int
+    total_count: int
     limit: int

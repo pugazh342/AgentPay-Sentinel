@@ -354,14 +354,49 @@ class PayPalClient:
                 "purchase_units": [purchase_unit],
                 "application_context": application_context,
             },
-            extra_headers={"PayPal-Request-Id": request_id},
+            extra_headers={
+                "PayPal-Request-Id": request_id,
+                "Prefer": "return=representation",
+            },
         )
-        return self._order_result(payload)
+        result = self._order_result(payload)
+
+        # Fallback: if PayPal returns a minimal response without custom_id,
+        # fetch the full order representation to validate binding.
+        # reference_id must never prevent GET retrieval.
+        if result.raw_custom_id is None and result.order_id:
+            try:
+                full_result = await self.get_order(result.order_id)
+                # Only accept GET result if it has a valid order_id and custom_id
+                if full_result.order_id == result.order_id and full_result.custom_id:
+                    result = full_result
+                else:
+                    # GET returned different order or no custom_id - fail closed
+                    pass
+            except PayPalGatewayError:
+                # If GET fails, binding validation will fail closed.
+                pass
+
+        # Diagnostic logging for binding verification
+        logger.debug(
+            "paypal_order_creation_response",
+            extra={
+                "paypal_response_status": "CREATED",
+                "paypal_order_id": result.order_id,
+                "paypal_purchase_units_count": 1,
+                "paypal_custom_id": result.raw_custom_id,
+                "paypal_reference_id": result.raw_reference_id,
+                "paypal_parsed_custom_id": result.custom_id,
+                "binding_validated": result.custom_id == custom_id,
+            }
+        )
+        return result
 
     async def get_order(self, order_id: str) -> PayPalOrderResult:
         payload = await self._request_json(
             "GET",
             f"/v2/checkout/orders/{quote(order_id, safe='')}",
+            extra_headers={"Prefer": "return=representation"},
         )
         return self._order_result(payload)
 
@@ -376,9 +411,31 @@ class PayPalClient:
             "POST",
             f"/v2/checkout/orders/{quote(order_id, safe='')}/capture",
             json={},
-            extra_headers={"PayPal-Request-Id": request_id},
+            extra_headers={
+                "PayPal-Request-Id": request_id,
+                # The capture endpoint also defaults to return=minimal, which
+                # omits purchase_units[].payments.captures[]. Ask for the full
+                # representation so the capture can be verified deterministically
+                # instead of being deferred to webhook reconciliation.
+                "Prefer": "return=representation",
+            },
         )
         order = self._order_result(payload)
+
+        # Diagnostic logging for capture binding verification
+        logger.debug(
+            "paypal_capture_response",
+            extra={
+                "paypal_response_status": order.status,
+                "paypal_order_id": order.order_id,
+                "paypal_custom_id": order.raw_custom_id,
+                "paypal_reference_id": order.raw_reference_id,
+                "paypal_parsed_custom_id": order.custom_id,
+                "expected_custom_id": custom_id,
+                "binding_validated": order.custom_id == custom_id,
+            }
+        )
+
         if order.capture_id is None or order.capture_status is None:
             raise PayPalGatewayError(
                 "PayPal capture response did not include a capture record.",
@@ -435,9 +492,14 @@ class PayPalClient:
             amount = _decimal(amount_data.get("value"))
             currency = _string(amount_data.get("currency_code"))
 
-        custom_id = _string(unit.get("custom_id")) or _string(
-            unit.get("reference_id")
-        )
+        # Capture raw values for diagnostic logging before processing
+        raw_custom_id = _string(unit.get("custom_id"))
+        raw_reference_id = _string(unit.get("reference_id"))
+
+        # SECURITY: custom_id is the authoritative binding identifier.
+        # No fallback to reference_id - both must be validated independently.
+        # The caller validates binding; we just expose what PayPal returned.
+        custom_id = raw_custom_id
 
         approval_url = None
         links = payload.get("links")
@@ -480,6 +542,8 @@ class PayPalClient:
             custom_id=custom_id,
             capture_id=capture_id,
             capture_status=capture_status,
+            raw_custom_id=raw_custom_id,
+            raw_reference_id=raw_reference_id,
         )
 
     # ------------------------------------------------------------------

@@ -13,16 +13,36 @@ __pycache__/
 .coverage
 htmlcov/
 
-# Local configuration and secrets
+# Node / frontend build artifacts
+node_modules/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.turbo/
+*.tsbuildinfo
+next-env.d.ts
+
+# Local configuration and secrets (never commit real credentials)
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+*.pfx
+id_rsa*
+cookies*.txt
+*secret*
+*credential*backup*
 
-# Local databases
+# Local databases and local runtime artifacts
 *.db
 *.db-journal
 *.sqlite
 *.sqlite3
+*.log
+backend/reports/*.log
+backend/reports/backend_*.*.log
+backend/reports/frontend_start*.log
 
 # Editors / OS
 .vscode/

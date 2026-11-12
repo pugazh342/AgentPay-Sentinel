@@ -34,13 +34,19 @@ def health(request: Request, response: Response) -> HealthResponse:
     healthy = database_status == "ok" and fingerprints.configured
     response.status_code = 200 if healthy else 503
 
+    settings = request.app.state.settings
+    ai_status = "configured" if settings.active_provider_configured else "not_configured"
+
     return HealthResponse(
         status="ok" if healthy else "degraded",
         service="agentpay-sentinel",
         version=__version__,
-        environment=request.app.state.settings.environment,
+        environment=settings.environment,
         checks=HealthChecks(
             database=database_status,
             hmac_configuration=hmac_status,
+            ai_provider=settings.ai_provider,
+            ai_model=settings.active_model,
+            ai_status=ai_status,
         ),
     )

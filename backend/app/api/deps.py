@@ -13,7 +13,7 @@ from app.application.threat_analysis_service import ThreatAnalysisService
 from app.application.threat_engine import ThreatAnalysisEngine
 from app.application.transaction_service import TransactionService
 from app.domain.clock import Clock
-from app.domain.errors import SecurityConfigurationFailure
+from app.domain.errors import AuthenticationFailure, CsrfFailure, SecurityConfigurationFailure
 from app.domain.ports import PayPalGateway
 from app.persistence.repositories import (
     SqlAlchemyIntentRepository,
@@ -24,6 +24,7 @@ from app.persistence.repositories import (
     SqlAlchemyUnitOfWork,
     SqlAlchemyWebhookEventRepository,
 )
+from app.security.auth import CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, LoginRateLimiter, verify_csrf_token, verify_session_token
 from app.security.event_logger import SecurityEventLogger
 from app.security.fingerprint import FingerprintService
 
@@ -129,3 +130,39 @@ def get_security_event_repository(
     session: Session = Depends(get_session),
 ) -> SqlAlchemySecurityEventRepository:
     return SqlAlchemySecurityEventRepository(session)
+
+
+def get_auth_rate_limiter(request: Request) -> LoginRateLimiter:
+    limiter = getattr(request.app.state, "auth_rate_limiter", None)
+    if limiter is None:
+        limiter = LoginRateLimiter()
+        request.app.state.auth_rate_limiter = limiter
+    return limiter
+
+
+def require_authenticated_operator(request: Request) -> str:
+    settings = request.app.state.settings
+    if not getattr(settings, "auth_enabled", True):
+        return "operator"
+    if not settings.operator_auth_configured:
+        raise AuthenticationFailure("Operator authentication is not configured.")
+    token = request.cookies.get(SESSION_COOKIE)
+    payload = verify_session_token(token or "", settings.operator_session_secret_value or "")
+    if not payload:
+        raise AuthenticationFailure("Authentication required.")
+    principal = str(payload.get("sub"))
+    request.state.operator = principal
+    return principal
+
+
+def require_csrf_for_unsafe(request: Request) -> None:
+    if request.method in {"GET", "HEAD", "OPTIONS"}:
+        return
+    settings = request.app.state.settings
+    if not getattr(settings, "auth_enabled", True):
+        return
+    secret = settings.operator_session_secret_value or ""
+    cookie = request.cookies.get(CSRF_COOKIE, "")
+    header = request.headers.get(CSRF_HEADER, "")
+    if not cookie or not header or cookie != header or not verify_csrf_token(cookie, secret):
+        raise CsrfFailure("CSRF validation failed.")

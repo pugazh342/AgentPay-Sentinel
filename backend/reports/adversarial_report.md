@@ -1,6 +1,6 @@
 # AgentPay Sentinel - Adversarial Security Report
 
-Milestone 04. Every result below was produced by executing the scenario against the application's real services with mocked external providers. No live PayPal payment or capture was performed.
+Milestone 07. Every result below was produced by executing the scenario against the application's real services with mocked external providers. No live PayPal payment or capture was performed.
 
 ## Summary
 

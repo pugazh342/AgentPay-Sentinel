@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import select, update, func
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -129,6 +129,46 @@ class SqlAlchemyIntentRepository:
             expires_at=row.expires_at,
             fingerprint=row.fingerprint,
         )
+
+    def list(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[PurchaseIntent]:
+        """List intents ordered by creation time descending, then intent_id.
+
+        Deterministic tie-break on intent_id so pagination is stable.
+        """
+        statement = (
+            select(IntentRow)
+            .order_by(IntentRow.created_at.desc(), IntentRow.intent_id.desc())
+            .offset(offset)
+            .limit(min(limit, 1000))
+        )
+        rows = self._session.scalars(statement).all()
+        return [
+            PurchaseIntent(
+                intent_id=UUID(row.intent_id),
+                user_id=row.user_id,
+                purpose=row.purpose,
+                merchant_id=row.merchant_id,
+                product_category=row.product_category,
+                max_amount=money_from_storage(row.max_amount),
+                currency=row.currency,
+                max_quantity=row.max_quantity,
+                require_approval=row.require_approval,
+                created_at=row.created_at,
+                expires_at=row.expires_at,
+                fingerprint=row.fingerprint,
+            )
+            for row in rows
+        ]
+
+    def count(self) -> int:
+        """Return the total number of persisted intents."""
+        statement = select(func.count()).select_from(IntentRow)
+        return int(self._session.scalar(statement) or 0)
 
 
 class SqlAlchemyTransactionRepository:
@@ -313,6 +353,64 @@ class SqlAlchemyPaymentRepository:
         row = self._session.scalars(statement).first()
         return _payment_from_row(row) if row is not None else None
 
+    def list(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        state: PaymentState | None = None,
+        intent_id: UUID | None = None,
+        transaction_id: UUID | None = None,
+    ) -> list[Payment]:
+        """List payments with optional filtering.
+
+        Args:
+            limit: Maximum number of results (default 100, max 1000).
+            offset: Number of results to skip for pagination.
+            state: Filter by payment state.
+            intent_id: Filter by purchase intent ID.
+            transaction_id: Filter by transaction ID.
+
+        Returns:
+            List of Payment entities ordered by creation time descending.
+        """
+        statement = select(PaymentRow).order_by(PaymentRow.created_at.desc())
+
+        if state is not None:
+            statement = statement.where(PaymentRow.state == state.value)
+        if intent_id is not None:
+            statement = statement.where(PaymentRow.intent_id == str(intent_id))
+        if transaction_id is not None:
+            statement = statement.where(PaymentRow.transaction_id == str(transaction_id))
+
+        statement = statement.offset(offset).limit(min(limit, 1000))
+
+        rows = self._session.scalars(statement).all()
+        return [_payment_from_row(row) for row in rows]
+
+    def count(
+        self,
+        *,
+        state: PaymentState | None = None,
+        intent_id: UUID | None = None,
+        transaction_id: UUID | None = None,
+    ) -> int:
+        """Return the total count of payments matching the given filters.
+
+        Applies the same predicates as ``list()`` so that ``total_count`` is
+        the size of the filtered dataset, not the size of the current page.
+        """
+        statement = select(func.count()).select_from(PaymentRow)
+        if state is not None:
+            statement = statement.where(PaymentRow.state == state.value)
+        if intent_id is not None:
+            statement = statement.where(PaymentRow.intent_id == str(intent_id))
+        if transaction_id is not None:
+            statement = statement.where(
+                PaymentRow.transaction_id == str(transaction_id)
+            )
+        return int(self._session.scalar(statement) or 0)
+
     def transition(
         self,
         payment_id: UUID,
@@ -475,6 +573,23 @@ class SqlAlchemySecurityEventRepository:
             )
             for row in rows
         ]
+
+    def count(
+        self,
+        *,
+        event_type: EventType | None = None,
+        decision: Decision | None = None,
+    ) -> int:
+        statement = select(func.count()).select_from(SecurityEventRow)
+        if event_type is not None:
+            statement = statement.where(
+                SecurityEventRow.event_type == event_type.value
+            )
+        if decision is not None:
+            statement = statement.where(
+                SecurityEventRow.decision == decision.value
+            )
+        return int(self._session.scalar(statement) or 0)
 
 
 class SqlAlchemyUnitOfWork:

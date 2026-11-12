@@ -15,7 +15,34 @@ from app.domain.entities import PurchaseIntent
 from app.domain.errors import ConfigurationFailure
 from app.main import create_app
 from app.security.fingerprint import FingerprintService
-from tests.conftest import MutableClock, TEST_HMAC_SECRET
+from tests.conftest import (
+    MutableClock,
+    TEST_HMAC_SECRET,
+    TEST_OPERATOR_PASSWORD,
+    TEST_OPERATOR_PASSWORD_HASH,
+    TEST_OPERATOR_SESSION_SECRET,
+    TEST_OPERATOR_USERNAME,
+)
+
+
+def _login_and_enable_csrf(test_client: TestClient) -> None:
+    response = test_client.post(
+        "/api/v1/auth/login",
+        json={"username": TEST_OPERATOR_USERNAME, "password": TEST_OPERATOR_PASSWORD},
+    )
+    assert response.status_code == 200, response.text
+    original_request = test_client.request
+
+    def request_with_csrf(method, url, **kwargs):
+        if str(method).upper() not in {"GET", "HEAD", "OPTIONS"}:
+            csrf = test_client.cookies.get("aps_csrf")
+            if csrf:
+                headers = dict(kwargs.get("headers") or {})
+                headers.setdefault("X-CSRF-Token", csrf)
+                kwargs["headers"] = headers
+        return original_request(method, url, **kwargs)
+
+    test_client.request = request_with_csrf  # type: ignore[assignment]
 
 
 def test_intent_and_transaction_survive_app_restart(
@@ -26,8 +53,11 @@ def test_intent_and_transaction_survive_app_restart(
     clock = MutableClock(clock.now())
     first_app = create_app(settings=settings, clock=clock)
     with TestClient(first_app) as first_client:
-        created = first_client.post("/api/v1/intents", json=intent_payload).json()
-        decision = first_client.post(
+        _login_and_enable_csrf(first_client)
+        created_resp = first_client.post("/api/v1/intents", json=intent_payload)
+        assert created_resp.status_code == 201, created_resp.text
+        created = created_resp.json()
+        decision_resp = first_client.post(
             "/api/v1/transactions/evaluate",
             json={
                 "user_id": created["user_id"],
@@ -39,10 +69,13 @@ def test_intent_and_transaction_survive_app_restart(
                 "quantity": 1,
                 "request_id": "req_persistence_1",
             },
-        ).json()
+        )
+        assert decision_resp.status_code == 200, decision_resp.text
+        decision = decision_resp.json()
 
     second_app = create_app(settings=settings, clock=clock)
     with TestClient(second_app) as second_client:
+        _login_and_enable_csrf(second_client)
         intent_response = second_client.get(
             f"/api/v1/intents/{created['intent_id']}"
         )
@@ -125,10 +158,16 @@ def test_missing_hmac_secret_fails_closed(
         database_url=f"sqlite:///{(tmp_path / 'missing-secret.db').as_posix()}",
         environment="test",
         log_level="WARNING",
+        operator_username=TEST_OPERATOR_USERNAME,
+        operator_password_hash=TEST_OPERATOR_PASSWORD_HASH,
+        operator_session_secret=TEST_OPERATOR_SESSION_SECRET,
+        operator_cookie_secure=False,
+        auth_enabled=True,
     )
     app = create_app(settings=settings, clock=clock)
 
     with TestClient(app) as client:
+        _login_and_enable_csrf(client)
         health = client.get("/health")
         create_intent = client.post("/api/v1/intents", json=intent_payload)
         evaluate = client.post(
@@ -165,10 +204,16 @@ def test_short_hmac_secret_fails_closed(tmp_path, clock: MutableClock) -> None:
         database_url=f"sqlite:///{(tmp_path / 'short-secret.db').as_posix()}",
         environment="test",
         log_level="WARNING",
+        operator_username=TEST_OPERATOR_USERNAME,
+        operator_password_hash=TEST_OPERATOR_PASSWORD_HASH,
+        operator_session_secret=TEST_OPERATOR_SESSION_SECRET,
+        operator_cookie_secure=False,
+        auth_enabled=True,
     )
     app = create_app(settings=settings, clock=clock)
 
     with TestClient(app) as client:
+        _login_and_enable_csrf(client)
         health = client.get("/health")
         events = client.get("/api/v1/security/events")
 

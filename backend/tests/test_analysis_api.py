@@ -21,10 +21,34 @@ from app.domain.threat import DetectedThreat, ThreatAssessmentPayload
 from app.main import create_app
 from tests.conftest import (
     TEST_HMAC_SECRET,
+    TEST_OPERATOR_PASSWORD,
+    TEST_OPERATOR_PASSWORD_HASH,
+    TEST_OPERATOR_SESSION_SECRET,
+    TEST_OPERATOR_USERNAME,
     MutableClock,
     StubThreatProvider,
     benign_payload,
 )
+
+
+def _login_and_enable_csrf(test_client: TestClient) -> None:
+    response = test_client.post(
+        "/api/v1/auth/login",
+        json={"username": TEST_OPERATOR_USERNAME, "password": TEST_OPERATOR_PASSWORD},
+    )
+    assert response.status_code == 200, response.text
+    original_request = test_client.request
+
+    def request_with_csrf(method, url, **kwargs):
+        if str(method).upper() not in {"GET", "HEAD", "OPTIONS"}:
+            csrf = test_client.cookies.get("aps_csrf")
+            if csrf:
+                headers = dict(kwargs.get("headers") or {})
+                headers.setdefault("X-CSRF-Token", csrf)
+                kwargs["headers"] = headers
+        return original_request(method, url, **kwargs)
+
+    test_client.request = request_with_csrf  # type: ignore[assignment]
 
 BENIGN_CONTEXT = {
     "product_title": "Trail running shoes",
@@ -100,7 +124,7 @@ def test_analysis_endpoint_persists_and_get_returns_latest(
     assert body["provider_status"] == "OK"
     assert body["threat_level"] == "LOW"
     assert body["transaction_id"] == transaction["transaction_id"]
-    assert body["model_name"] == analysis_client.app.state.settings.gemini_model
+    assert body["model_name"] == analysis_client.app.state.settings.active_model
     assert stub_provider.calls[-1].agent_reasoning == "Benign reasoning."
 
     retrieved = analysis_client.get(
@@ -589,12 +613,18 @@ def test_api_key_is_never_exposed(
         environment="test",
         log_level="WARNING",
         gemini_api_key=key,
+        operator_username=TEST_OPERATOR_USERNAME,
+        operator_password_hash=TEST_OPERATOR_PASSWORD_HASH,
+        operator_session_secret=TEST_OPERATOR_SESSION_SECRET,
+        operator_cookie_secure=False,
+        auth_enabled=True,
     )
     provider = StubThreatProvider()
     app = create_app(settings=secured, clock=clock, threat_provider=provider)
 
     with TestClient(app) as client:
-        created = client.post(
+        _login_and_enable_csrf(client)
+        created_resp = client.post(
             "/api/v1/intents",
             json={
                 "user_id": "user_123",
@@ -607,7 +637,9 @@ def test_api_key_is_never_exposed(
                 "require_approval": True,
                 "expires_at": (clock.now().replace(year=2027)).isoformat(),
             },
-        ).json()
+        )
+        assert created_resp.status_code == 201, created_resp.text
+        created = created_resp.json()
         transaction = client.post(
             "/api/v1/transactions/evaluate",
             json={
@@ -622,6 +654,7 @@ def test_api_key_is_never_exposed(
                 "analysis_context": BENIGN_CONTEXT,
             },
         )
+        assert transaction.status_code == 200, transaction.text
         openapi = client.get("/openapi.json")
         analysis_response = analyze(client, transaction.json()["transaction_id"])
 
@@ -642,6 +675,11 @@ def test_analysis_endpoints_fail_closed_without_hmac_secret(
         database_url=f"sqlite:///{(tmp_path / 'analysis-fail-closed.db').as_posix()}",
         environment="test",
         log_level="WARNING",
+        operator_username=TEST_OPERATOR_USERNAME,
+        operator_password_hash=TEST_OPERATOR_PASSWORD_HASH,
+        operator_session_secret=TEST_OPERATOR_SESSION_SECRET,
+        operator_cookie_secure=False,
+        auth_enabled=True,
     )
     app = create_app(
         settings=unsecured,
@@ -650,6 +688,7 @@ def test_analysis_endpoints_fail_closed_without_hmac_secret(
     )
 
     with TestClient(app) as client:
+        _login_and_enable_csrf(client)
         response = client.post(
             f"/api/v1/analysis/transactions/{uuid4()}",
             json={},
@@ -657,3 +696,107 @@ def test_analysis_endpoints_fail_closed_without_hmac_secret(
 
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "SECURITY_CONFIGURATION_INVALID"
+
+
+def test_health_reports_correct_groq_model_from_settings():
+    """Verify health endpoint reports the model configured in Settings."""
+    settings = Settings(
+        _env_file=None,
+        hmac_secret=TEST_HMAC_SECRET,
+        database_url="sqlite:///./test-health.db",
+        environment="test",
+        log_level="WARNING",
+        ai_provider="groq",
+        groq_model="openai/gpt-oss-120b",
+        groq_api_key="test-groq-key-for-health-test",
+    )
+
+    app = create_app(settings=settings)
+
+    with TestClient(app) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["checks"]["ai_provider"] == "groq"
+    assert body["checks"]["ai_model"] == "openai/gpt-oss-120b"
+    assert body["checks"]["ai_status"] == "configured"
+
+
+def test_health_reports_gemini_model_when_gemini_active():
+    """Verify health endpoint reports gemini model when gemini provider is active."""
+    settings = Settings(
+        _env_file=None,
+        hmac_secret=TEST_HMAC_SECRET,
+        database_url="sqlite:///./test-health-gemini.db",
+        environment="test",
+        log_level="WARNING",
+        ai_provider="gemini",
+        gemini_model="gemini-2.5-flash",
+        gemini_api_key="test-gemini-key-for-health-test",
+    )
+
+    app = create_app(settings=settings)
+
+    with TestClient(app) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["checks"]["ai_provider"] == "gemini"
+    assert body["checks"]["ai_model"] == "gemini-2.5-flash"
+
+
+def test_health_model_matches_provider_model():
+    """Verify health endpoint reports the exact model the provider uses."""
+    expected_model = "openai/gpt-oss-120b"
+    settings = Settings(
+        _env_file=None,
+        hmac_secret=TEST_HMAC_SECRET,
+        database_url="sqlite:///./test-health-provider.db",
+        environment="test",
+        log_level="WARNING",
+        ai_provider="groq",
+        groq_model=expected_model,
+        groq_api_key="test-key",
+    )
+
+    app = create_app(settings=settings)
+    provider = app.state.threat_provider
+
+    # Verify provider uses the same model
+    assert provider.model_name == expected_model
+
+    with TestClient(app) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["checks"]["ai_model"] == expected_model
+
+
+def test_health_groq_model_not_affected_by_gemini_config():
+    """Verify Groq configuration takes precedence when groq is active provider."""
+    settings = Settings(
+        _env_file=None,
+        hmac_secret=TEST_HMAC_SECRET,
+        database_url="sqlite:///./test-health-precedence.db",
+        environment="test",
+        log_level="WARNING",
+        ai_provider="groq",
+        groq_model="openai/gpt-oss-120b",
+        groq_api_key="groq-key",
+        gemini_model="gemini-fallback-model",
+        gemini_api_key="gemini-key",
+    )
+
+    app = create_app(settings=settings)
+
+    with TestClient(app) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    # Should report groq model, not gemini's
+    assert body["checks"]["ai_model"] == "openai/gpt-oss-120b"
+    assert body["checks"]["ai_provider"] == "groq"

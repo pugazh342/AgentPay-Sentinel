@@ -46,5 +46,8 @@ def list_security_events(
         event_type=event_type,
         decision=decision,
     )
+    total = repository.count(event_type=event_type, decision=decision)
     items = [SecurityEventResponse.model_validate(event) for event in events]
-    return SecurityEventListResponse(items=items, count=len(items), limit=limit)
+    return SecurityEventListResponse(
+        items=items, count=len(items), total_count=total, limit=limit
+    )
